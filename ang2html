@@ -1,0 +1,334 @@
+#!/usr/bin/python
+#
+# ang2html -- a hackish Angband Character Sheet to HTML converter
+#
+# Marks up the character sheet with <span>s, <a name>s, and other HTML.
+# Relies on external CSS to prettify the output. Uses regexes wantonly.
+#
+# Usage:
+#     ./ang2html < MyCharDump.txt > MyCharDump.html
+#
+#     (and copy ang2html-stock.css to the destination, as well!)
+#
+#
+# TODO:
+#
+# + command line options
+#     + output barren html
+#     + reference alternate stylesheet
+#     + specify input and output files
+# + drained stats not handled correctly
+# + properly colorize 3rd column trait values
+# + make an initial pass to get name, drained exp, 3rd column trait values
+# + parse options section
+#
+#
+# MIT License:
+#
+# Copyright (c) 2012 Brian "Beej Jorgensen" Hall <beej@beej.us>
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+#-- 
+# For Tom.
+#
+
+import sys
+import os
+import re
+
+SCRIPTNAME = 'ang2html'
+
+##
+# Application run context
+#
+class AppContext(object):
+	def __init__(self, argv):
+		global SCRIPTNAME
+
+		SCRIPTNAME = os.path.basename(argv[0])
+		argv.pop(0)
+
+		self.infile = sys.stdin
+		self.outfile = sys.stdout
+
+##
+# Look for section switches
+#
+def check_section_switch(line, cur_section):
+	trans = {
+		'none': ['[Ang', 'char'],
+		'char': ['rAcid', 'resist'],
+		'resist': ['[Character E', 'equip'],
+		'equip': ['[Character Q', 'quiver'],
+		'quiver': ['[Character I', 'inventory'],
+		'inventory': ['[Home', 'home'],
+		'home': ['====', 'events'],
+		'events': ['[Opt', 'options'],
+		'options': [None, None]
+	}
+
+	t = trans[cur_section]
+	match = t[0]
+	next_section = t[1]
+
+	if match != None:
+		if line[0:len(match)] == match:
+			return next_section
+
+	return None
+
+##
+# Output full HTML header
+#
+def html_header(fp, name):
+	fp.write("""<!DOCTYPE html>
+
+<html>
+<head>
+\t<title>%s's Character Dump</title>
+\t<link rel="stylesheet" type="text/css" href="ang2html-stock.css">
+</head>
+
+""" % name)
+	
+##
+# Output HTML nav
+#
+def html_nav(fp):
+	#\t<li><a href="#resist">Resistances</a>
+	fp.write("""<ul class="nav">
+\t<li><a href="#char">Character</a></li>
+\t<li><a href="#equip">Equipment</a></li>
+\t<li><a href="#quiver">Quiver</a></li>
+\t<li><a href="#inventory">Inventory</a></li>
+\t<li><a href="#home">Home</a></li>
+\t<li><a href="#events">Events</a></li>
+\t<li><a href="#options">Options</a></li>
+</ul>
+
+""")
+
+##
+# Output full HTML footer
+#
+def html_footer(fp):
+	fp.write("</html>\n")
+
+##
+# Translate stuff in square quotes
+#
+def square_brackets(l):
+	l2 = re.sub(r'^(\s*)(\[Ang.*?\])', \
+		r'\1<span class="mainheader">\2</span>', l)
+
+	if l2 == l:
+		l2 = re.sub(r'^(\s*)(\[\D.*?\])', \
+			r'\1<span class="subheader">\2</span>', l)
+
+	return l2
+
+
+##
+# Convert a line prefixed with a letter)
+#
+def letter_leader(l):
+	# Artifacts
+	l = re.sub(r'^(\s*\S\)\s*)(the .*)',
+		r'\1<span class="artifacttitle">\2</span>', l)
+
+	# Everything else
+	l = re.sub(r'^(\s*)(\S\))(\s*)(.*)', r'\1<span class="letter">\2</span>\3<span class="lettertext">\4</span>', l)
+
+	return l
+
+##
+# Converter for section none
+#
+def convert_none(line, sheetdata):
+	return line
+
+##
+# Converter for section char
+#
+def convert_char(line, sheetdata):
+	line = square_brackets(line)
+
+	# find name
+	mo = re.search(r'Name\s*?(\S+)', line)
+	if mo:
+		sheetdata['name'] = mo.group(1)
+
+	l2 = re.sub(r'Self  RB  CB  EB   Best',
+		r'<span class="statheader">Self</span>  <span class="statheader">RB</span>  <span class="statheader">CB</span>  <span class="statheader">EB</span>   <span class="statheader">Best</span>', line)
+
+	l2 = re.sub(r' (Name|Sex|Race|Class|Title|HP|SP|Age|Height|Weight|Social|Maximize)', \
+		r' <span class="traitname">\1</span>', l2)
+
+	l2 = re.sub(r' (Level|Cur Exp|Max Exp|Adv Exp|Game Turns|Standard Turns|Resting Turns|Gold)(\s*)(\S+)', \
+		r' <span class="traitname2">\1</span>\2<span class="traitcol1">\3</span>', l2)
+
+	l2 = re.sub(r' (MaxDepth)(\s*)(\S+ \S+)', \
+		r' <span class="traitname2">\1</span>\2<span class="traitcol1">\3</span>', l2)
+
+	# Fighting and Shooting have to come before Fight and Shoot:
+	l2 = re.sub(r' (Saving Throw|Stealth|Fighting|Shooting|Disarming|Magic Device|Searching)(\s*)(\S+)', \
+		r' <span class="traitname2">\1</span>\2<span class="traitcol3">\3</span>', l2)
+
+	l2 = re.sub(r' (Armor|Fight|Melee|Shoot|Blows|Shots|Infra|Speed|Burden)', \
+		r' <span class="traitname2">\1</span>', l2)
+
+	l2 = re.sub(r' (Perception)(\s*)(\S+\s+\S+\s+\S)', \
+		r' <span class="traitname2">\1</span>\2<span class="traitcol3">\3</span>', l2)
+
+	l2 = re.sub(r' (STR|INT|WIS|DEX|CON|CHR)([!:])(\s*)(\d+|\d+/\d+|\d+/\*\*\*)(\s*)([+-]\d+)(\s*)([+-]\d+)(\s*)([+-]\d+)(\s*)(\d+/\d+|\d+/\*\*\*|\d+)',
+		r' \1\2\3<span class="statval">\4</span>\5<span class="statbonus">\6</span>\7<span class="statbonus">\8</span>\9<span class="statbonus">\10</span>\11<span class="statval">\12</span>', l2);
+
+	l2 = re.sub(r' (STR|INT|WIS|DEX|CON|CHR)!', r' <span class="fullstat">\1!</span>', l2);
+	l2 = re.sub(r' (STR|INT|WIS|DEX|CON|CHR):', r' <span class="stat">\1:</span>', l2);
+
+	return l2
+
+##
+# Converter for section resist
+#
+def convert_resist(line, sheetdata):
+	l2 = re.sub(r'(\s*)(\S+?:)', r'\1<span class="resistname">\2</span>', line)
+	l2 = re.sub(r'(\++)', r'<span class="resistplus">\1</span>', l2)
+	l2 = re.sub(r'(\.+)', r'<span class="resistdot">\1</span>', l2)
+	return l2
+
+##
+# Converter for section equip
+#
+def convert_equip(line, sheetdata):
+	line = letter_leader(line)
+	line = square_brackets(line)
+	return line
+
+##
+# Converter for section quiver
+#
+def convert_quiver(line, sheetdata):
+	line = letter_leader(line)
+	line = square_brackets(line)
+	return line
+
+##
+# Converter for section inventory
+#
+def convert_inventory(line, sheetdata):
+	line = letter_leader(line)
+	line = square_brackets(line)
+	return line
+
+##
+# Converter for section home
+#
+def convert_home(line, sheetdata):
+	line = letter_leader(line)
+	line = square_brackets(line)
+	return line
+
+##
+# Converter for section events
+#
+def convert_events(line, sheetdata):
+	line = re.sub(r'(=+)', r'<span class="eventheader">\1</span>', line)
+	#line = re.sub(r'(\s*CHAR.)', r'<span class="eventheader">|         |       |CHAR.|</span>', line)
+	line = re.sub(r'(\s*)(CHAR.)', r'\1<span class="eventheader">\2</span>', line)
+	line = re.sub(r'^(\|.*)', r'<span class="eventheader">\1</span>', line)
+
+	# turn, depth, level:
+	line = re.sub(r'(\s*)(\d+)(\s*)(\d+\')(\s*)(\d+)(.*)',
+		r'\1<span class="eventturn">\2</span>\3<span class="eventdepth">\4</span>\5<span class="eventlevel">\6</span>\7',
+		line)
+
+	line = re.sub(r'(.*?)(\(LOST\))(.*)', r'\1<span class="eventlost">\2</span>\3', line)
+
+	line = re.sub(r'(.*?)(Began.*)', r'\1<span class="eventbegan">\2</span>', line)
+	line = re.sub(r'(.*?)(Reached.*)', r'\1<span class="eventreached">\2</span>', line)
+	line = re.sub(r'(.*?)(Killed.*)', r'\1<span class="eventkilled">\2</span>', line)
+	line = re.sub(r'(.*?)(Found.*)', r'\1<span class="eventfound">\2</span>', line)
+
+	return line
+
+##
+# Converter for section options
+#
+def convert_options(line, sheetdata):
+	line = square_brackets(line)
+	return line
+
+##
+# Convert the input file to HTML
+#
+def convert(ac):
+	htmlbody = []
+	sheetdata = {
+		'name': ""
+	}
+
+	out = ac.outfile
+
+	line_raw = ac.infile.readline()
+	look_ahead_raw = ac.infile.readline()
+	converter = convert_none
+	section = 'none'
+
+	while line_raw != '':
+		s = line_raw.strip()
+		if s != '':
+			new_section = check_section_switch(s, section)
+
+			if new_section != None:
+				htmlbody.append('<a name="%s"></a>' % new_section)
+				section = new_section
+				converter = getattr(sys.modules[__name__], 'convert_' + section)
+
+		work = converter(line_raw, sheetdata)
+
+		htmlbody.append(work)
+
+		line_raw = look_ahead_raw
+		look_ahead_raw = ac.infile.readline()
+	
+	# output final result
+	html_header(out, sheetdata['name'])
+
+	out.write("<body>\n")
+	html_nav(out)
+	out.write("<pre>\n")
+	out.write(''.join(htmlbody))
+	out.write("</pre>\n</body>\n")
+
+	html_footer(out)
+
+	out.close()
+
+##
+# Main
+#
+def main(argv):
+	ac = AppContext(argv)
+
+	convert(ac)
+
+if __name__ == '__main__': sys.exit(main(sys.argv))
